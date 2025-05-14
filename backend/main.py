@@ -16,6 +16,7 @@ import asyncio
 import threading
 import queue
 from fastapi.responses import StreamingResponse
+import database
 
 app = FastAPI()
 
@@ -34,9 +35,6 @@ running_processes: Dict[str, subprocess.Popen] = {}
 # Store saved commands
 SAVED_COMMANDS_FILE = "saved_commands.json"
 
-# Script management
-SAVED_SCRIPTS_FILE = "saved_scripts.json"
-
 class SavedCommand(BaseModel):
     name: str
     description: str = ""  # Optional description field with default empty string
@@ -51,11 +49,12 @@ class Script(BaseModel):
     name: str
     description: str
     body: str
+    category: str = "Uncategorized"
 
 class ScriptExecution(BaseModel):
     name: str
-    body: str
-    args: str = ""  # Default to empty string if no args provided
+    body: Optional[str] = None
+    args: Optional[str] = None
 
 def load_saved_commands() -> Dict[str, SavedCommand]:
     try:
@@ -76,19 +75,6 @@ def save_commands(commands: Dict[str, SavedCommand]):
 
 # Load saved commands at startup
 saved_commands = load_saved_commands()
-
-def load_saved_scripts() -> dict:
-    if os.path.exists(SAVED_SCRIPTS_FILE):
-        with open(SAVED_SCRIPTS_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def save_scripts(scripts: dict):
-    with open(SAVED_SCRIPTS_FILE, 'w') as f:
-        json.dump(scripts, f, indent=2)
-
-# Load saved scripts on startup
-saved_scripts = load_saved_scripts()
 
 class FileManager:
     @staticmethod
@@ -528,22 +514,99 @@ async def delete_saved_command(name: str):
         return {"status": "success", "message": f"Command '{name}' deleted"}
     raise HTTPException(status_code=404, detail=f"Command '{name}' not found")
 
-@app.get("/api/fs/saved-scripts")
-async def get_saved_scripts():
-    return saved_scripts
+@app.get("/api/fs/scripts")
+async def get_scripts():
+    """Get all scripts with their names and descriptions."""
+    try:
+        scripts = database.get_all_scripts()
+        return {"scripts": scripts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/fs/categories")
+async def get_categories():
+    """Get all unique categories."""
+    try:
+        categories = database.get_categories()
+        return {"categories": categories}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/fs/scripts/{name}")
+async def get_script(name: str):
+    """Get a specific script by name."""
+    try:
+        script = database.get_script_by_name(name)
+        if not script:
+            raise HTTPException(status_code=404, detail="Script not found")
+        return script
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/fs/scripts/{name}/args")
+async def get_script_args(name: str):
+    """Get the last 10 arguments used for a script."""
+    try:
+        args = database.get_script_args(name)
+        return {"args": args}
+    except Exception as e:
+        print(f"Error getting script args: {e}")
+        return {"args": []}
 
 @app.post("/api/fs/save-script")
 async def save_script(script: Script):
-    saved_scripts[script.name] = script.dict()
-    save_scripts(saved_scripts)
-    return {"status": "success"}
+    """Save or update a script."""
+    try:
+        if database.save_script(script.name, script.description, script.body, script.category):
+            return {"message": "Script saved successfully"}
+        raise HTTPException(status_code=500, detail="Failed to save script")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/fs/saved-script/{name}")
+@app.delete("/api/fs/scripts/{name}")
 async def delete_script(name: str):
-    if name in saved_scripts:
-        del saved_scripts[name]
-        save_scripts(saved_scripts)
-    return {"status": "success"}
+    """Delete a script."""
+    try:
+        if database.delete_script(name):
+            return {"message": "Script deleted successfully"}
+        raise HTTPException(status_code=404, detail="Script not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/fs/rename-script")
+async def rename_script_endpoint(payload: Dict[str, Any]):
+    """Rename a script (and update its metadata).
+
+    Expected JSON body:
+    {
+        "old_name": "old",
+        "new_name": "new",
+        "description": "...",
+        "body": "...",
+        "category": "..."
+    }
+    """
+    try:
+        old_name = payload.get("old_name")
+        new_name = payload.get("new_name")
+        description = payload.get("description", "")
+        body = payload.get("body", "")
+        category = payload.get("category", "Uncategorized")
+
+        if not old_name or not new_name:
+            raise HTTPException(status_code=400, detail="old_name and new_name are required")
+
+        success = database.rename_script(old_name, new_name, description, body, category)
+        if not success:
+            raise HTTPException(status_code=400, detail="Failed to rename script (name may already exist)")
+
+        # Return updated list
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in rename_script_endpoint: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def stream_process_output(process, output_queue):
     """Stream process output to a queue"""
@@ -588,6 +651,21 @@ def stream_process_output(process, output_queue):
 @app.post("/api/fs/execute-script-stream")
 async def execute_script_stream(script: ScriptExecution, request: Request):
     try:
+        print(f"Executing script: {script.name}")  # Debug print
+        print(f"Script args: {script.args}")  # Debug print
+        
+        # Save the arguments if provided
+        if script.args:
+            database.save_script_args(script.name, script.args)
+
+        # Get the script body from the database
+        db_script = database.get_script_by_name(script.name)
+        if not db_script:
+            raise HTTPException(status_code=404, detail="Script not found")
+        
+        script.body = db_script['body']  # Use the body from the database
+        print(f"Script body from DB: {script.body[:100]}...")  # Debug print (first 100 chars)
+
         # Create a temporary script file
         script_path = f"/tmp/script_{script.name}.sh"
         print(f"Creating script file: {script_path}")  # Debug print
@@ -600,6 +678,7 @@ async def execute_script_stream(script: ScriptExecution, request: Request):
             script.body.strip().startswith('import ') or
             script.body.strip().startswith('from ')
         )
+        print(f"Is Python script: {is_python}")  # Debug print
         
         try:
             with open(script_path, 'w') as f:
@@ -678,33 +757,39 @@ async def execute_script_stream(script: ScriptExecution, request: Request):
                     # Read from stdout
                     stdout_data = await process.stdout.read(1024)
                     if stdout_data:
-                        await output_queue.put(("output", stdout_data.decode()))
+                        decoded = stdout_data.decode()
+                        print(f"STDOUT: {decoded}")  # Debug print
+                        await output_queue.put(("output", decoded))
                     
                     # Read from stderr
                     stderr_data = await process.stderr.read(1024)
                     if stderr_data:
-                        await output_queue.put(("error", stderr_data.decode()))
+                        decoded = stderr_data.decode()
+                        print(f"STDERR: {decoded}")  # Debug print
+                        await output_queue.put(("error", decoded))
 
                     # Check if process is done
                     if process.stdout.at_eof() and process.stderr.at_eof():
+                        # Get return code
+                        return_code = await process.wait()
+                        print(f"Process exited with code: {return_code}")  # Debug print
+                        if return_code != 0:
+                            await output_queue.put(("error", f"Process exited with code {return_code}"))
                         break
 
                     # Small delay to prevent busy waiting
                     await asyncio.sleep(0.1)
 
-                # Get return code
-                return_code = await process.wait()
-                if return_code != 0:
-                    await output_queue.put(("error", f"Process exited with code {return_code}"))
             except Exception as e:
-                print(f"Error in stream_process_output: {e}")
+                print(f"Error in stream_process_output: {e}")  # Debug print
                 await output_queue.put(("error", f"Error: {str(e)}"))
             finally:
                 # Clean up the script file
                 try:
                     os.remove(script_path)
+                    print(f"Cleaned up script file: {script_path}")  # Debug print
                 except Exception as e:
-                    print(f"Error removing script file: {e}")
+                    print(f"Error removing script file: {e}")  # Debug print
 
         # Start the output streaming task
         stream_task = asyncio.create_task(stream_process_output())
@@ -720,6 +805,7 @@ async def execute_script_stream(script: ScriptExecution, request: Request):
                     try:
                         # Get message from queue with timeout
                         event_type, data = await asyncio.wait_for(output_queue.get(), timeout=0.1)
+                        print(f"Sending event: {event_type} - {data[:100]}...")  # Debug print
                         
                         # Format the data for SSE
                         formatted_data = data.replace('\n', '\\n')
@@ -728,21 +814,20 @@ async def execute_script_stream(script: ScriptExecution, request: Request):
                         # Mark task as done
                         output_queue.task_done()
                     except asyncio.TimeoutError:
-                        # No data available, check if process is still running
-                        if process.returncode is not None:
-                            # Process is done, check if there's any remaining output
-                            if output_queue.empty():
-                                break
+                        # No data available, check if streaming task has finished
+                        if stream_task.done() and output_queue.empty():
+                            break
                         continue
                     except Exception as e:
-                        print(f"Error in event_generator: {e}")
+                        print(f"Error in event_generator: {e}")  # Debug print
                         yield f"event: error\ndata: Error: {str(e)}\n\n"
                         break
 
                 # Send final event
+                print("Sending final event")  # Debug print
                 yield "event: done\ndata: Script execution completed\n\n"
             except Exception as e:
-                print(f"Error in event_generator: {e}")
+                print(f"Error in event_generator: {e}")  # Debug print
                 yield f"event: error\ndata: Error: {str(e)}\n\n"
             finally:
                 # Cancel the stream task if it's still running
@@ -763,9 +848,9 @@ async def execute_script_stream(script: ScriptExecution, request: Request):
             }
         )
     except Exception as e:
-        print(f"Error in execute_script_stream: {e}")
+        print(f"Error in execute_script_stream: {e}")  # Debug print
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8001) 
+    uvicorn.run(app, host="0.0.0.0", port=8001) 
