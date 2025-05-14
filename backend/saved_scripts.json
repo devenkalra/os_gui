@@ -1,0 +1,22 @@
+{
+  "Test LS": {
+    "name": "Test LS",
+    "description": "Test the ls of root directory",
+    "body": "#!/bin/bash\necho \"All arguments: $@\"\nls -l $@"
+  },
+  "disk free": {
+    "name": "disk free",
+    "description": "Show free disk on different volumes",
+    "body": "#!/bin/bash\ndf -h"
+  },
+  "Youtube resolutions": {
+    "name": "Youtube resolutions",
+    "description": "",
+    "body": "#!/usr/bin/python3\nimport sys\nfrom yt_dlp import YoutubeDL\nfrom yt_dlp.utils import DownloadError\nfrom tabulate import tabulate\n\ndef bytes_to_mb(size_bytes):\n    if size_bytes:\n        return round(size_bytes / (1024 ** 2), 1)\n    return \"\u2014\"\n\ndef list_formats(url):\n    ydl_opts = {'quiet': True, 'skip_download': True}\n    try:\n        with YoutubeDL(ydl_opts) as ydl:\n            info = ydl.extract_info(url, download=False)\n            formats = info.get('formats', [])\n            title = info.get('title', 'Unknown Title')\n\n            video_rows = []\n            audio_rows = []\n\n            for f in formats:\n                fid = f.get('format_id', '')\n                ext = f.get('ext', '')\n                vcodec = f.get('vcodec', 'none')\n                acodec = f.get('acodec', 'none')\n                res = f.get('resolution', '') or (f.get('height') and f\"{f['height']}p\") or \"\u2014\"\n                fps = f.get('fps', '\u2014')\n                size = bytes_to_mb(f.get('filesize'))\n\n                if vcodec != 'none' and f.get('height', 0) > 1080:\n                    video_rows.append([fid, ext, res, fps, vcodec, size])\n                elif vcodec == 'none' and acodec != 'none':\n                    abr = f.get('abr', '\u2014')\n                    audio_rows.append([fid, ext, f\"{abr} kbps\", acodec, size])\n\n            print(f\"\\n\u25b6\ufe0f Video: {title}\\nURL: {url}\")\n\n            if video_rows:\n                print(\"\\n\ud83c\udfa5 Video Formats (>1080p):\")\n                print(tabulate(video_rows,\n                               headers=[\"Format ID\", \"Ext\", \"Resolution\", \"FPS\", \"Video Codec\", \"Size (MB)\"],\n                               tablefmt=\"pretty\"))\n            else:\n                print(\"\\n\u2139\ufe0f No video formats >1080p found.\")\n\n            if audio_rows:\n                print(\"\\n\ud83c\udfb5 Audio Formats:\")\n                print(tabulate(audio_rows,\n                               headers=[\"Format ID\", \"Ext\", \"Bitrate\", \"Audio Codec\", \"Size (MB)\"],\n                               tablefmt=\"pretty\"))\n            else:\n                print(\"\\n\u2139\ufe0f No audio formats found.\")\n\n    except DownloadError as e:\n        print(f\"\\n\u274c Failed to process URL: {url}\")\n        print(f\"   Reason: {e}\")\n\ndef main():\n    if len(sys.argv) != 2:\n        print(\"Usage: python youtube_formats_table.py <youtube_url_or_file>\")\n        sys.exit(1)\n\n    input_arg = sys.argv[1]\n\n    if input_arg.startswith(\"http\"):\n        list_formats(input_arg)\n    else:\n        try:\n            with open(input_arg, 'r') as file:\n                for line in file:\n                    url = line.strip()\n                    if url and not url.startswith('#'):\n                        list_formats(url)\n        except FileNotFoundError:\n            print(f\"\u274c File not found: {input_arg}\")\n            sys.exit(1)\n\nif __name__ == \"__main__\":\n    main()\n"
+  },
+  "test": {
+    "name": "test",
+    "description": "",
+    "body": "#!/bin/bash\necho \"Test output\"\nsleep 1\necho \"More output\""
+  }
+}

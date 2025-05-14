@@ -1,0 +1,66 @@
+{
+  "df-avail": {
+    "name": "df-avail",
+    "description": "Sort by Available",
+    "command": "df",
+    "parameters": {},
+    "options": {
+      "human": true
+    },
+    "sortField": "",
+    "sortDirection": "desc",
+    "postProcess": {
+      "sort": " awk 'NR==1; NR > 1 {print $0 | \"sort -k4 -h\"}'",
+      "grep": ""
+    }
+  },
+  "df by 3 field": {
+    "name": "df by 3 field",
+    "description": "",
+    "command": "df",
+    "parameters": {},
+    "options": {
+      "human": true
+    },
+    "sortField": "",
+    "sortDirection": "desc",
+    "postProcess": {
+      "sort": " awk 'NR==1; NR > 1 {print $0 | \"sort -k3 -h\"}'",
+      "grep": ""
+    }
+  },
+  "df (used)": {
+    "name": "df (used)",
+    "description": "",
+    "command": "df",
+    "parameters": {},
+    "options": {
+      "human": true
+    },
+    "sortField": "",
+    "sortDirection": "desc",
+    "postProcess": {
+      "sort": " awk 'NR==1; NR > 1 {print $0 | \"sort -k3 -h\"}'",
+      "grep": ""
+    }
+  },
+  "duerapi": {
+    "name": "duerapi",
+    "description": "",
+    "command": "du",
+    "parameters": {
+      "path": "/data/code/bldrdojo/erapi"
+    },
+    "options": {
+      "human": true,
+      "maxdepth": true
+    },
+    "sortField": "",
+    "sortDirection": "desc",
+    "postProcess": {
+      "sort": "sort -h",
+      "grep": "",
+      "head": ""
+    }
+  }
+}
