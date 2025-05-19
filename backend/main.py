@@ -5,6 +5,7 @@ import shutil
 from typing import List, Dict, Optional, Any
 from pathlib import Path
 import json
+import yaml
 import subprocess
 from pydantic import BaseModel
 from datetime import datetime
@@ -17,9 +18,10 @@ import threading
 import queue
 from fastapi.responses import StreamingResponse
 import database
+from exec_env import ExecEnv, ExecResult
 
 app = FastAPI()
-
+exec_env = ExecEnv()
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
@@ -50,11 +52,13 @@ class Script(BaseModel):
     description: str
     body: str
     category: str = "Uncategorized"
+    accepts_reference: bool = False
 
 class ScriptExecution(BaseModel):
     name: str
     body: Optional[str] = None
     args: Optional[str] = None
+    working_dir: Optional[str] = None
 
 def load_saved_commands() -> Dict[str, SavedCommand]:
     try:
@@ -210,6 +214,8 @@ def parse_size(size_str: str) -> int:
 @app.get("/api/files/list/{path:path}")
 async def list_directory(path: str):
     return FileManager.list_directory(path)
+
+
 
 @app.post("/api/files/create-dir/{path:path}")
 async def create_directory(path: str):
@@ -523,6 +529,15 @@ async def get_scripts():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+@app.get("/api/fs/get_last_result")
+async def get_last_result():
+    try:
+        return {"text":exec_env.get_text()}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/fs/categories")
 async def get_categories():
     """Get all unique categories."""
@@ -557,7 +572,7 @@ async def get_script_args(name: str):
 async def save_script(script: Script):
     """Save or update a script."""
     try:
-        if database.save_script(script.name, script.description, script.body, script.category):
+        if database.save_script(script.name, script.description, script.body, script.accepts_reference, script.category):
             return {"message": "Script saved successfully"}
         raise HTTPException(status_code=500, detail="Failed to save script")
     except Exception as e:
@@ -653,10 +668,10 @@ async def execute_script_stream(script: ScriptExecution, request: Request):
     try:
         print(f"Executing script: {script.name}")  # Debug print
         print(f"Script args: {script.args}")  # Debug print
-        
+        print(f"Script working dir: {script.working_dir}")  # Debug print
         # Save the arguments if provided
         if script.args:
-            database.save_script_args(script.name, script.args)
+            database.save_script_args(script.name, script.args, script.working_dir)
 
         # Get the script body from the database
         db_script = database.get_script_by_name(script.name)
@@ -732,68 +747,139 @@ async def execute_script_stream(script: ScriptExecution, request: Request):
             
         if script.args:
             cmd.extend(shlex.split(script.args))
-        
+
+        if db_script["accepts_reference"]:
+            cmd.append("--reference")
+            encoded = json.dumps(exec_env.get_json()).encode("utf-8").hex()
+            cmd.append(encoded)
+
         print(f"Executing command: {' '.join(cmd)}")  # Debug print
         
         # Start the process
+        if not script.working_dir:
+            script.working_dir = os.getcwd()
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
+            cwd=script.working_dir,
         )
 
         # Create a queue for output
         output_queue = asyncio.Queue()
 
+        # the output from a command would be a bunch of text, ended by EOF or string --JSON--
+        # optionally this is followed by a json string until EOF
+
         async def stream_process_output():
+            stdout_remainder = ""
+            stderr_remainder = ""
+            yaml_started = False
+            yaml_buffer = ""
+            text_buffer = ""
+
             try:
                 while True:
-                    # Check if client disconnected
                     if await request.is_disconnected():
                         print("Client disconnected, terminating process")
                         process.terminate()
                         break
 
-                    # Read from stdout
                     stdout_data = await process.stdout.read(1024)
                     if stdout_data:
                         decoded = stdout_data.decode()
-                        print(f"STDOUT: {decoded}")  # Debug print
-                        await output_queue.put(("output", decoded))
-                    
-                    # Read from stderr
+                        combined = stdout_remainder + decoded
+                        lines = combined.splitlines(keepends=True)
+
+                        if lines and not lines[-1].endswith('\n'):
+                            stdout_remainder = lines.pop()
+                        else:
+                            stdout_remainder = ""
+
+                        for line in lines:
+                            if yaml_started:
+                                yaml_buffer += line
+                            elif "--YAML--" in line:
+                                yaml_started = True
+                                _, after_marker = line.split("--YAML--", 1)
+                                yaml_buffer += after_marker
+                            else:
+                                print(f"STDOUT: {line.strip()}")
+                                await output_queue.put(("output", line))
+                                text_buffer += line
+
                     stderr_data = await process.stderr.read(1024)
                     if stderr_data:
                         decoded = stderr_data.decode()
-                        print(f"STDERR: {decoded}")  # Debug print
-                        await output_queue.put(("error", decoded))
+                        combined = stderr_remainder + decoded
+                        lines = combined.splitlines(keepends=True)
 
-                    # Check if process is done
+                        if lines and not lines[-1].endswith('\n'):
+                            stderr_remainder = lines.pop()
+                        else:
+                            stderr_remainder = ""
+
+                        for line in lines:
+                            print(f"STDERR: {line.strip()}")
+                            await output_queue.put(("error", line))
+
                     if process.stdout.at_eof() and process.stderr.at_eof():
-                        # Get return code
                         return_code = await process.wait()
-                        print(f"Process exited with code: {return_code}")  # Debug print
+                        print(f"Process exited with code: {return_code}")
+
+                        if stdout_remainder:
+                            if yaml_started:
+                                yaml_buffer += stdout_remainder
+                            else:
+                                print(f"STDOUT (incomplete): {stdout_remainder.strip()}")
+                                await output_queue.put(("output", stdout_remainder))
+                                text_buffer += stdout_remainder
+
+                        if stderr_remainder:
+                            print(f"STDERR (incomplete): {stderr_remainder.strip()}")
+                            await output_queue.put(("error", stderr_remainder))
+
                         if return_code != 0:
                             await output_queue.put(("error", f"Process exited with code {return_code}"))
+
                         break
 
-                    # Small delay to prevent busy waiting
                     await asyncio.sleep(0.1)
 
             except Exception as e:
-                print(f"Error in stream_process_output: {e}")  # Debug print
+                print(f"Error in stream_process_output: {e}")
                 await output_queue.put(("error", f"Error: {str(e)}"))
+
             finally:
-                # Clean up the script file
                 try:
                     os.remove(script_path)
-                    print(f"Cleaned up script file: {script_path}")  # Debug print
+                    print(f"Cleaned up script file: {script_path}")
                 except Exception as e:
-                    print(f"Error removing script file: {e}")  # Debug print
+                    print(f"Error removing script file: {e}")
+
+            # Parse and return JSON if present
+            if yaml_started:
+                try:
+                    return (text_buffer, yaml_buffer)
+                except json.JSONDecodeError as e:
+                    print(f"Failed to parse JSON: {e}")
+                    await output_queue.put(("error", "Invalid JSON received"))
+                    return (text_buffer, None)
+            else:
+                return (text_buffer, None)
 
         # Start the output streaming task
         stream_task = asyncio.create_task(stream_process_output())
-
+        (text_result, yaml_result) = await stream_task
+        if yaml_result is not None:
+            command_result = ExecResult(
+                type="json",
+                command=script.name,
+                json_result=yaml.safe_load(yaml_result),
+                text_result=text_result,
+                args=script.args
+            )
+            exec_env.add_result(command_result)
         async def event_generator():
             try:
                 while True:

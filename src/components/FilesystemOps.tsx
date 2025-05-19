@@ -17,7 +17,9 @@ import {
   ListItemText,
   ListItemSecondaryAction,
   Autocomplete,
-  Divider
+  Divider,
+  FormControlLabel,
+  Checkbox
 } from '@mui/material';
 import {
   PlayArrow as RunIcon,
@@ -35,6 +37,23 @@ interface SavedScript {
   description: string;
   body: string;
   category: string;
+  accepts_reference?: boolean;
+  working_dir?: string;
+}
+
+interface ScriptArgHistory {
+  args: string;
+  working_dir?: string;
+}
+
+interface HistoryItem {
+  args: string;
+  working_dir: string;
+}
+
+interface AutocompleteOption {
+  label: string;
+  value: string;
 }
 
 const FilesystemOps = () => {
@@ -63,8 +82,13 @@ const FilesystemOps = () => {
   const [pendingScript, setPendingScript] = useState<SavedScript | null>(null);
   const [scriptArgs, setScriptArgs] = useState<string>('');
   const [scriptArgHistory, setScriptArgHistory] = useState<string[]>([]);
-  const [abortController, setAbortController] = useState<AbortController | null>(null);
+  const [historyItems, setHistoryItems] = useState<HistoryItem[]>([]);
+  const [workingDirOptions, setWorkingDirOptions] = useState<AutocompleteOption[]>([]);
+  const [workingDir, setWorkingDir] = useState('');
+  const [acceptsReference, setAcceptsReference] = useState(false);
   const [originalScriptName, setOriginalScriptName] = useState<string>('');
+  const [lastResultDialogOpen, setLastResultDialogOpen] = useState(false);
+  const [lastResultText, setLastResultText] = useState('');
 
   // Load saved scripts and categories on component mount
   useEffect(() => {
@@ -121,20 +145,73 @@ const FilesystemOps = () => {
       const data = await response.json();
       if (!data || !Array.isArray(data.args)) {
         setScriptArgHistory([]);
+        setHistoryItems([]);
+        setWorkingDirOptions([]);
         setScriptArgs('');
+        setWorkingDir('');
         return;
       }
-      setScriptArgHistory(data.args);
+      const historyItems = data.args as ScriptArgHistory[];
+      // Extract just the args strings for the history dropdown
+      const argsList = historyItems.map((item: ScriptArgHistory) => item.args || '');
+      setScriptArgHistory(argsList);
+      setHistoryItems(historyItems.map(item => ({
+        args: item.args || '',
+        working_dir: item.working_dir || ''
+      })));
+      
+      // Create working directory options
+      const uniqueDirs = Array.from(new Set(historyItems.map(item => item.working_dir || '')));
+      setWorkingDirOptions(uniqueDirs.map(dir => ({ label: dir, value: dir })));
+      
       // Set the most recent args as the current value
-      if (data.args.length > 0) {
-        setScriptArgs(data.args[0]);
+      if (historyItems.length > 0) {
+        setScriptArgs(historyItems[0].args || '');
+        setWorkingDir(historyItems[0].working_dir || '');
       } else {
         setScriptArgs('');
+        setWorkingDir('');
       }
     } catch (err) {
       console.error('Error loading script args:', err);
       setScriptArgHistory([]);
+      setHistoryItems([]);
+      setWorkingDirOptions([]);
       setScriptArgs('');
+      setWorkingDir('');
+    }
+  };
+
+  const handleArgsChange = (value: string | null) => {
+    if (!value) {
+      setScriptArgs('');
+      setWorkingDir('');
+      return;
+    }
+    
+    // Find matching history item
+    const historyItem = historyItems.find(item => item.args === value);
+    if (historyItem) {
+      setScriptArgs(historyItem.args);
+      setWorkingDir(historyItem.working_dir);
+    } else {
+      setScriptArgs(value);
+    }
+  };
+
+  const handleWorkingDirChange = (value: string | null) => {
+    if (!value) {
+      setWorkingDir('');
+      return;
+    }
+    
+    // Find matching history item
+    const historyItem = historyItems.find(item => item.working_dir === value);
+    if (historyItem) {
+      setScriptArgs(historyItem.args);
+      setWorkingDir(historyItem.working_dir);
+    } else {
+      setWorkingDir(value);
     }
   };
 
@@ -154,6 +231,7 @@ const FilesystemOps = () => {
         const fullScript = await response.json();
         setSelectedScript(fullScript);
         setOriginalScriptName(fullScript.name);
+        setAcceptsReference(fullScript.accepts_reference ?? false);
         await loadScriptArgs(script.name);
         setHasUnsavedChanges(false);  // Reset the flag when selecting a script
       } catch (err) {
@@ -164,7 +242,11 @@ const FilesystemOps = () => {
       setSelectedScript(null);
       setScriptArgs('');
       setScriptArgHistory([]);
+      setHistoryItems([]);
+      setWorkingDirOptions([]);
       setOriginalScriptName('');
+      setAcceptsReference(false);
+      setWorkingDir('');
       setHasUnsavedChanges(false);  // Reset the flag when clearing selection
     }
   };
@@ -179,7 +261,6 @@ const FilesystemOps = () => {
     
     // Create new AbortController for this execution
     const controller = new AbortController();
-    setAbortController(controller);
     
     try {
       // First, get the latest version of the script from the database
@@ -199,7 +280,8 @@ const FilesystemOps = () => {
         },
         body: JSON.stringify({
           name: latestScript.name,
-          args: scriptArgs
+          args: scriptArgs,
+          working_dir: workingDir || undefined
         }),
         signal: controller.signal
       });
@@ -296,7 +378,6 @@ const FilesystemOps = () => {
       }
     } finally {
       setLoading(false);
-      setAbortController(null);
     }
   };
 
@@ -328,7 +409,9 @@ const FilesystemOps = () => {
           name: scriptName,
           description: scriptDescription,
           body: scriptBody,
-          category: scriptCategory || 'Uncategorized'
+          category: scriptCategory || 'Uncategorized',
+          accepts_reference: acceptsReference,
+          working_dir: workingDir,
         }),
       });
 
@@ -364,6 +447,7 @@ const FilesystemOps = () => {
         setSelectedScript(null);
         setScriptArgs('');
         setScriptArgHistory([]);
+        setHistoryItems([]);
       }
     } catch (err) {
       console.error('Error deleting script:', err);
@@ -401,7 +485,9 @@ const FilesystemOps = () => {
             new_name: selectedScript.name,
             description: selectedScript.description,
             body: selectedScript.body,
-            category: selectedScript.category
+            category: selectedScript.category,
+            accepts_reference: acceptsReference,
+            working_dir: workingDir,
           }),
         });
       } else {
@@ -415,7 +501,9 @@ const FilesystemOps = () => {
             name: selectedScript.name,
             description: selectedScript.description,
             body: selectedScript.body,
-            category: selectedScript.category
+            category: selectedScript.category,
+            accepts_reference: acceptsReference,
+            working_dir: workingDir,
           }),
         });
       }
@@ -449,9 +537,24 @@ const FilesystemOps = () => {
   };
 
   const handleCancelScript = () => {
-    if (abortController) {
-      abortController.abort();
-      setAbortController(null);
+    if (repeatTimer) {
+      clearInterval(repeatTimer);
+      setRepeatTimer(null);
+    }
+  };
+
+  const handleShowLastResult = async () => {
+    try {
+      const resp = await fetch('http://localhost:8001/api/fs/get_last_result');
+      if (!resp.ok) {
+        throw new Error(`HTTP error! status: ${resp.status}`);
+      }
+      const text = JSON.parse(await resp.text()).text;
+      setLastResultText(text);
+      setLastResultDialogOpen(true);
+    } catch (err) {
+      console.error('Error fetching last result:', err);
+      setError('Failed to fetch last result');
     }
   };
 
@@ -496,6 +599,12 @@ const FilesystemOps = () => {
             onClick={() => setSaveDialogOpen(true)}
           >
             New Script
+          </Button>
+          <Button
+            variant="outlined"
+            onClick={handleShowLastResult}
+          >
+            Last Result
           </Button>
         </Box>
 
@@ -669,19 +778,44 @@ const FilesystemOps = () => {
                   freeSolo
                   options={scriptArgHistory}
                   value={scriptArgs}
-                  onChange={(_, newValue) => setScriptArgs(newValue || '')}
-                  onInputChange={(_, newValue) => setScriptArgs(newValue)}
-                  openOnFocus
-                  filterOptions={(opts) => opts}
-                  getOptionLabel={(option) => option}
+                  onChange={(_, val: string | null) => handleArgsChange(val)}
+                  onInputChange={(_, val: string) => handleArgsChange(val)}
                   renderInput={(params) => (
                     <TextField
                       {...params}
-                      label="Script Arguments (latest auto-filled)"
-                      variant="outlined"
+                      label="Script Arguments"
                       fullWidth
+                      margin="normal"
                     />
                   )}
+                />
+              </Box>
+              <Box sx={{ mb: 2 }}>
+                <Autocomplete
+                  freeSolo
+                  options={workingDirOptions.map(opt => opt.value)}
+                  value={workingDir}
+                  onChange={(_, val: string | null) => handleWorkingDirChange(val)}
+                  onInputChange={(_, val: string) => handleWorkingDirChange(val)}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Working Directory"
+                      fullWidth
+                      margin="normal"
+                      placeholder="Leave empty to use current directory"
+                    />
+                  )}
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={acceptsReference}
+                      onChange={(e) => setAcceptsReference(e.target.checked)}
+                    />
+                  }
+                  label="Accepts Reference"
+                  sx={{ mt: 1 }}
                 />
               </Box>
 
@@ -893,6 +1027,19 @@ const FilesystemOps = () => {
           <Button onClick={handleConfirmDiscard} color="error">
             Discard Changes
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Last Result Dialog */}
+      <Dialog open={lastResultDialogOpen} onClose={() => setLastResultDialogOpen(false)} maxWidth="md" fullWidth>
+        <DialogTitle>Last Result</DialogTitle>
+        <DialogContent dividers>
+          <Typography component="pre" sx={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>
+            {lastResultText || 'No result available.'}
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setLastResultDialogOpen(false)}>Close</Button>
         </DialogActions>
       </Dialog>
     </Box>

@@ -24,9 +24,11 @@ import {
   Image as ImageIcon,
   VideoLibrary as VideoIcon,
   Storage as StorageIcon,
+  PlayArrow as PlayArrowIcon,
 } from '@mui/icons-material';
 import FileManager from './components/FileManager';
 import FilesystemOps from './components/FilesystemOps';
+import CommandRunner from './components/CommandRunner';
 
 const drawerWidth = 240;
 
@@ -46,10 +48,8 @@ function App() {
   };
 
   const menuItems = [
-    { text: 'File Manager', icon: <FolderIcon />, path: '/' },
     { text: 'Filesystem Operations', icon: <StorageIcon />, path: '/fs-ops' },
-    { text: 'Image Processing', icon: <ImageIcon />, path: '/images' },
-    { text: 'Video Processing', icon: <VideoIcon />, path: '/videos' },
+    { text: 'Command Runner', icon: <PlayArrowIcon />, path: '/commands' },
   ];
 
   return (
@@ -100,6 +100,7 @@ function App() {
           <Routes>
             <Route path="/" element={<FileManager />} />
             <Route path="/fs-ops" element={<FilesystemOps />} />
+            <Route path="/commands" element={<CommandRunner />} />
             <Route path="/images" element={<div>Image Processing (Coming Soon)</div>} />
             <Route path="/videos" element={<div>Video Processing (Coming Soon)</div>} />
           </Routes>
